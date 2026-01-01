@@ -26,13 +26,21 @@ if not is_valid:
 class StarRailMoneyWarBot:
     """星穹铁道货币战争机器人"""
     
-    def __init__(self):
-        """初始化机器人"""
+    def __init__(self, device_id=None):
+        """初始化机器人
+        
+        Args:
+            device_id: 设备ID，不指定则自动检测
+        """
         # 配置日志
         self._setup_logger()
         
         # 初始化ADB核心
         self.adb = ADBCore(logger=self.logger)
+        
+        # 设置设备ID
+        if device_id:
+            self.adb.device_id = device_id
         
         # 初始化模板匹配器
         self.matcher = TemplateMatcher(logger=self.logger)
@@ -345,11 +353,15 @@ class StarRailMoneyWarBot:
             self.logger.error(f"周期执行出错: {str(e)}", exc_info=True)
             return False
     
-    def start(self, cycles=0):
+    def start(self, cycles=0, save_progress=False, progress_file="progress.json", resume=False, progress=None):
         """启动机器人
         
         Args:
             cycles: 运行周期数，0表示无限循环
+            save_progress: 是否保存运行进度
+            progress_file: 进度保存文件路径
+            resume: 是否从保存的进度中恢复
+            progress: 恢复的进度数据
         """
         self.logger.info("=== 启动星穹铁道货币战争自动化脚本 ===")
         
@@ -374,6 +386,12 @@ class StarRailMoneyWarBot:
         self.running = True
         cycle_count = 0
         
+        # 从保存的进度中恢复
+        if resume and progress:
+            self.total_battles = progress.get('total_battles', 0)
+            cycle_count = progress.get('cycle_count', 0)
+            self.logger.info(f"从进度中恢复: 总战斗次数={self.total_battles}, 已运行周期数={cycle_count}")
+        
         try:
             while self.running:
                 # 运行一个周期
@@ -381,6 +399,10 @@ class StarRailMoneyWarBot:
                 
                 # 增加周期计数
                 cycle_count += 1
+                
+                # 保存进度
+                if save_progress:
+                    self._save_progress(progress_file, cycle_count)
                 
                 # 检查是否达到指定周期数
                 if cycles > 0 and cycle_count >= cycles:
@@ -405,8 +427,44 @@ class StarRailMoneyWarBot:
         except Exception as e:
             self.logger.error(f"脚本运行出错: {str(e)}", exc_info=True)
         finally:
+            # 保存最终进度
+            if save_progress:
+                self._save_progress(progress_file, cycle_count)
             self.running = False
             self.logger.info("=== 脚本已停止 ===")
+    
+    def _save_progress(self, progress_file, cycle_count):
+        """保存运行进度
+        
+        Args:
+            progress_file: 进度保存文件路径
+            cycle_count: 当前已运行周期数
+        """
+        import json
+        
+        try:
+            # 读取现有进度
+            progress = {}
+            if os.path.exists(progress_file):
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+            
+            # 更新当前设备的进度
+            device_id = self.adb.get_device_id()
+            progress[device_id] = {
+                'total_battles': self.total_battles,
+                'cycle_count': cycle_count,
+                'last_run_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'device_id': device_id
+            }
+            
+            # 保存进度
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress, f, ensure_ascii=False, indent=2)
+            
+            self.logger.debug(f"进度已保存到: {progress_file}")
+        except Exception as e:
+            self.logger.error(f"保存进度失败: {str(e)}")
     
     def stop(self):
         """停止机器人"""
@@ -416,6 +474,7 @@ class StarRailMoneyWarBot:
 def main():
     """主函数"""
     import argparse
+    import json
     
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="《崩坏：星穹铁道》货币战争自动化脚本")
@@ -447,9 +506,36 @@ def main():
         help="ADB可执行文件路径"
     )
     parser.add_argument(
-        "-d", "--dry-run", 
+        "-s", "--device", 
+        type=str, 
+        default=None,
+        help="指定设备ID，不指定则自动检测并使用第一个设备"
+    )
+    parser.add_argument(
+        "--all-devices", 
+        action="store_true",
+        help="在所有连接的设备上运行脚本"
+    )
+    parser.add_argument(
+        "-n", "--dry-run", 
         action="store_true",
         help="模拟运行，不执行实际操作"
+    )
+    parser.add_argument(
+        "--save-progress", 
+        action="store_true",
+        help="保存运行进度，支持断点续跑"
+    )
+    parser.add_argument(
+        "--progress-file", 
+        type=str, 
+        default="progress.json",
+        help="进度保存文件路径"
+    )
+    parser.add_argument(
+        "--resume", 
+        action="store_true",
+        help="从保存的进度中恢复运行"
     )
     
     # 解析参数
@@ -464,11 +550,48 @@ def main():
     if args.adb_path:
         CONFIG['adb_path'] = args.adb_path
     
-    # 创建机器人实例
-    bot = StarRailMoneyWarBot()
+    # 导入ADBCore用于设备检测
+    from adb_core import ADBCore
+    adb = ADBCore(adb_path=CONFIG['adb_path'])
     
-    # 运行机器人
-    bot.start(cycles=args.cycles)
+    # 获取设备列表
+    devices = adb.get_devices()
+    if not devices:
+        print("未检测到连接的设备，脚本退出")
+        return
+    
+    # 加载进度
+    progress = {}
+    if args.resume:
+        try:
+            with open(args.progress_file, 'r', encoding='utf-8') as f:
+                progress = json.load(f)
+            print(f"成功加载进度: {args.progress_file}")
+        except Exception as e:
+            print(f"加载进度失败: {str(e)}")
+    
+    # 选择要运行的设备
+    if args.all_devices:
+        # 在所有设备上运行
+        print(f"在所有 {len(devices)} 个设备上运行脚本")
+        for device_id in devices:
+            print(f"\n=== 开始在设备 {device_id} 上运行 ===")
+            bot = StarRailMoneyWarBot(device_id=device_id)
+            bot.start(cycles=args.cycles, save_progress=args.save_progress, 
+                     progress_file=args.progress_file, resume=args.resume, 
+                     progress=progress.get(device_id, {}))
+    else:
+        # 使用指定设备或第一个设备
+        device_id = args.device or devices[0]
+        if device_id not in devices:
+            print(f"指定的设备ID {device_id} 不存在，脚本退出")
+            return
+        
+        print(f"使用设备: {device_id}")
+        bot = StarRailMoneyWarBot(device_id=device_id)
+        bot.start(cycles=args.cycles, save_progress=args.save_progress, 
+                 progress_file=args.progress_file, resume=args.resume, 
+                 progress=progress.get(device_id, {}))
 
 
 if __name__ == "__main__":
