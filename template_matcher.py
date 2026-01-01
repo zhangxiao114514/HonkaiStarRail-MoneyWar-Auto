@@ -27,18 +27,24 @@ class TemplateMatcher:
         # 创建模板目录
         if not os.path.exists(self.template_dir):
             os.makedirs(self.template_dir)
-            self.logger("创建模板目录: templates")
+            self.log("创建模板目录: templates", "INFO")
     
-    def log(self, message: str):
+    def log(self, message: str, level: str = "INFO"):
         """日志记录
         
         Args:
             message: 日志消息
+            level: 日志级别
         """
         if self.logger:
-            self.logger(message)
+            # 检查logger是否有日志级别方法
+            if hasattr(self.logger, level.lower()):
+                getattr(self.logger, level.lower())(message)
+            else:
+                # 兼容旧的logger接口
+                self.logger(message)
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] {message}")
+            print(f"[{time.strftime('%H:%M:%S')}] [{level}] {message}")
     
     def load_template(self, name: str, template_path: str) -> bool:
         """加载模板图像
@@ -52,21 +58,83 @@ class TemplateMatcher:
         """
         try:
             if not os.path.exists(template_path):
-                self.log(f"模板文件不存在: {template_path}")
+                self.log(f"模板文件不存在: {template_path}", "WARNING")
                 return False
             
             # 读取模板图像
             template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
             if template is None:
-                self.log(f"无法加载模板: {template_path}")
+                self.log(f"无法加载模板: {template_path}", "ERROR")
                 return False
             
+            # 验证模板大小合理性
+            if template.shape[0] < 10 or template.shape[1] < 10:
+                self.log(f"模板尺寸过小: {name} ({template.shape[1]}x{template.shape[0]})")
+                # 仍然加载，但给出警告
+            
             self.templates[name] = template
-            self.log(f"加载模板成功: {name}")
+            self.log(f"加载模板成功: {name} ({template.shape[1]}x{template.shape[0]})")
             return True
         except Exception as e:
-            self.log(f"加载模板失败: {str(e)}")
+            self.log(f"加载模板失败: {str(e)}", "ERROR")
             return False
+    
+    def validate_templates(self) -> bool:
+        """验证所有已加载模板的有效性
+        
+        Returns:
+            所有模板有效返回True，否则返回False
+        """
+        if not self.templates:
+            self.log("没有加载任何模板", "WARNING")
+            return False
+        
+        all_valid = True
+        for name, template in self.templates.items():
+            if template is None:
+                self.log(f"模板无效: {name}", "ERROR")
+                all_valid = False
+            elif template.shape[0] < 10 or template.shape[1] < 10:
+                self.log(f"模板尺寸过小: {name} ({template.shape[1]}x{template.shape[0]})")
+                # 尺寸过小不影响整体验证结果
+        
+        return all_valid
+    
+    def check_template_update(self, name: str, current_image, threshold: float = 0.9) -> bool:
+        """检查模板是否需要更新
+        
+        Args:
+            name: 模板名称
+            current_image: 当前屏幕图像
+            threshold: 更新阈值
+            
+        Returns:
+            需要更新返回True，否则返回False
+        """
+        if name not in self.templates:
+            self.log(f"模板不存在: {name}", "WARNING")
+            return True
+        
+        # 匹配当前模板
+        match_result = self.match_template(current_image, name, threshold)
+        if not match_result:
+            self.log(f"模板匹配失败，建议更新: {name}", "INFO")
+            return True
+        
+        return False
+    
+    def update_template(self, name: str, current_image, region: Optional[Tuple[int, int, int, int]] = None) -> str:
+        """更新模板
+        
+        Args:
+            name: 模板名称
+            current_image: 当前屏幕图像
+            region: 模板区域 (x, y, width, height)
+            
+        Returns:
+            模板保存路径，失败返回空字符串
+        """
+        return self.save_template(name, current_image, region)
     
     def save_template(self, name: str, image: np.ndarray, region: Optional[Tuple[int, int, int, int]] = None) -> str:
         """保存模板图像

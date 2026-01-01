@@ -28,16 +28,22 @@ class ADBCore:
         self.resolution = (1280, 720)  # 默认分辨率
         self.last_screenshot_time = 0
         
-    def log(self, message: str):
+    def log(self, message: str, level: str = "INFO"):
         """日志记录
         
         Args:
             message: 日志消息
+            level: 日志级别
         """
         if self.logger:
-            self.logger(message)
+            # 检查logger是否有日志级别方法
+            if hasattr(self.logger, level.lower()):
+                getattr(self.logger, level.lower())(message)
+            else:
+                # 兼容旧的logger接口
+                self.logger(message)
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] {message}")
+            print(f"[{time.strftime('%H:%M:%S')}] [{level}] {message}")
     
     def _run_cmd(self, cmd: str, timeout: int = 10, retry: int = 1) -> Optional[str]:
         """运行ADB命令
